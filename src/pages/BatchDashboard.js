@@ -2,22 +2,54 @@
 
 import React, { useEffect, useRef, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { Layout, Card, Typography, Button, Upload, message, Table, Checkbox } from "antd";
-import { Bar, Doughnut } from "react-chartjs-2";
+import {
+  Layout,
+  Card,
+  Typography,
+  Button,
+  Upload,
+  message,
+  Table,
+  Checkbox,
+  Row,
+  Col,
+  Divider,
+  Space,
+} from "antd";
+import { Bar, Doughnut, Line } from "react-chartjs-2";
 import * as XLSX from "xlsx";
 import jsPDF from "jspdf";
-import GridLayout from "react-grid-layout";
+import { Responsive, WidthProvider } from "react-grid-layout";
 import "react-grid-layout/css/styles.css";
 import "react-resizable/css/styles.css";
+import {
+  Chart as ChartJS,
+  CategoryScale,
+  LinearScale,
+  BarElement,
+  ArcElement,
+  LineElement,
+  PointElement,
+  Tooltip,
+  Legend,
+} from "chart.js";
 
-// Chart.js v3 이상에서는 필요한 스케일, 엘리먼트, 툴팁, 범례 등을 명시적으로 등록해줘야 함
-import { Chart as ChartJS, CategoryScale, LinearScale, BarElement, ArcElement, Tooltip, Legend } from "chart.js";
-ChartJS.register(CategoryScale, LinearScale, BarElement, ArcElement, Tooltip, Legend);
+ChartJS.register(
+  CategoryScale,
+  LinearScale,
+  BarElement,
+  ArcElement,
+  LineElement,
+  PointElement,
+  Tooltip,
+  Legend
+);
 
+const ResponsiveGridLayout = WidthProvider(Responsive);
 const { Title } = Typography;
-const { Content } = Layout;
+const { Header, Content } = Layout;
 
-/** PNG/PDF 차트 다운로드 */
+/** PNG/PDF 차트 다운로드 함수 */
 function downloadChart(ref, format, title) {
   if (!ref?.current) return;
   const base64 = ref.current.toBase64Image();
@@ -33,19 +65,63 @@ function downloadChart(ref, format, title) {
   }
 }
 
+/** Bar 차트 옵션 */
+const barOptions = {
+  responsive: true,
+  maintainAspectRatio: false,
+  plugins: { legend: { position: "bottom" } },
+  scales: { y: { beginAtZero: true, ticks: { stepSize: 1 } } },
+};
+
+/** Doughnut 차트 옵션 (범례를 하단에 배치) */
+const doughnutOptionsBottom = {
+  responsive: true,
+  maintainAspectRatio: false,
+  plugins: {
+    legend: { position: "bottom" },
+    tooltip: {
+      callbacks: {
+        label: (ctx) => {
+          const value = ctx.parsed;
+          const sum = ctx.dataset.data.reduce((acc, cur) => acc + cur, 0);
+          const pct = sum > 0 ? ((value / sum) * 100).toFixed(1) : 0;
+          return `${ctx.label}: ${value}명 (${pct}%)`;
+        },
+      },
+    },
+  },
+};
+
+/** Line 차트 옵션 (일별 지원자 추이) */
+const lineOptions = {
+  responsive: true,
+  maintainAspectRatio: false,
+  plugins: { legend: { position: "bottom" } },
+  scales: { y: { beginAtZero: true, ticks: { stepSize: 1 } } },
+};
+
 function BatchDashboard() {
-  const { trackName = "트랙명 없음", batch = "기수 없음" } = useParams();
+  const { trackName = "자율주행", batch = "3" } = useParams();
   const navigate = useNavigate();
 
-  // 통합된 엑셀 데이터
+  // 통합 엑셀 데이터, 파일, 오류, 제외 surveyID, 편집 모드
   const [mergedData, setMergedData] = useState([]);
-  // 파일 업로드 관련
   const [fileList, setFileList] = useState([]);
-  // 오류 메시지
   const [errorMessage, setErrorMessage] = useState("");
-
-  // 체크된 surveyID 목록 (집계에서 제외)
   const [excludedSurveyIds, setExcludedSurveyIds] = useState([]);
+  const [editMode, setEditMode] = useState(false);
+
+  // 반응형 레이아웃 설정 (각 카드 최소 크기 포함)
+  const [layouts, setLayouts] = useState({
+    lg: [
+      { i: "submissionTime", x: 0, y: 0, w: 4, h: 3, minW: 3, minH: 3 },
+      { i: "ageGroup", x: 4, y: 0, w: 4, h: 3, minW: 3, minH: 3 },
+      { i: "currentStatus", x: 8, y: 0, w: 4, h: 3, minW: 3, minH: 3 },
+      { i: "education", x: 0, y: 3, w: 4, h: 3, minW: 3, minH: 3 },
+      { i: "referralPath", x: 4, y: 3, w: 4, h: 3, minW: 3, minH: 3 },
+      { i: "dailyTrend", x: 8, y: 3, w: 4, h: 3, minW: 3, minH: 3 },
+    ],
+  });
 
   // 차트 ref
   const chartRefs = {
@@ -54,33 +130,20 @@ function BatchDashboard() {
     currentStatus: useRef(null),
     education: useRef(null),
     referralPath: useRef(null),
+    dailyTrend: useRef(null),
   };
 
-  // GridLayout 설정
-  const layout = [
-    { i: "submissionTime", x: 0, y: 0, w: 6, h: 3 },
-    { i: "ageGroup", x: 6, y: 0, w: 6, h: 3 },
-    { i: "currentStatus", x: 0, y: 3, w: 6, h: 3 },
-    { i: "education", x: 6, y: 3, w: 6, h: 3 },
-    { i: "referralPath", x: 0, y: 6, w: 12, h: 3 },
-  ];
-
-  /** 제외 체크 상태를 localStorage에서 불러오기 */
   useEffect(() => {
     const saved = localStorage.getItem("excludedSurveyIds");
-    if (saved) {
-      setExcludedSurveyIds(JSON.parse(saved));
-    }
+    if (saved) setExcludedSurveyIds(JSON.parse(saved));
   }, []);
 
-  /** 제외 체크 상태가 바뀔 때마다 localStorage에 저장 */
   useEffect(() => {
     localStorage.setItem("excludedSurveyIds", JSON.stringify(excludedSurveyIds));
   }, [excludedSurveyIds]);
 
-  /** 파일 읽기 함수 */
-  const readExcel = (file) => {
-    return new Promise((resolve, reject) => {
+  const readExcel = (file) =>
+    new Promise((resolve, reject) => {
       const reader = new FileReader();
       reader.onload = (evt) => {
         try {
@@ -95,9 +158,7 @@ function BatchDashboard() {
       reader.onerror = reject;
       reader.readAsBinaryString(file);
     });
-  };
 
-  /** 파일 업로드 핸들러 */
   const handleUpload = async ({ fileList }) => {
     setFileList(fileList);
     if (fileList.length !== 2) {
@@ -110,7 +171,6 @@ function BatchDashboard() {
         readExcel(fileList[1].originFileObj),
       ]);
 
-      // 추가 정보 병합
       const pivotedStatus = {};
       additionalRaw.forEach((row) => {
         const id = row.surveyResponseId;
@@ -121,15 +181,10 @@ function BatchDashboard() {
         }
       });
 
-      // surveyRaw + pivotedStatus 병합
       const finalData = surveyRaw.map((row) => {
         const id = row.surveyResponseId;
         const 모집상태 = row["모집 상태"]?.trim() || "작성중";
-        return {
-          ...row,
-          ...(pivotedStatus[id] || {}),
-          "모집 상태": 모집상태,
-        };
+        return { ...row, ...(pivotedStatus[id] || {}), "모집 상태": 모집상태 };
       });
 
       setMergedData(finalData);
@@ -139,71 +194,33 @@ function BatchDashboard() {
     }
   };
 
-  /** JSON 파싱 */
   const parseQuestion = (val) => {
     if (!val) return "";
     try {
       const parsed = JSON.parse(val);
-      if (Array.isArray(parsed)) return parsed.join(", ");
-      if (typeof parsed === "object") return Object.values(parsed).join(" / ");
-      return parsed;
+      return Array.isArray(parsed)
+        ? parsed.join(", ")
+        : typeof parsed === "object"
+        ? Object.values(parsed).join(" / ")
+        : parsed;
     } catch {
       return val;
     }
   };
 
-  /** 차트 데이터 생성 */
-  const chartData = (labels, data, backgroundColor = "#8e2de2") => ({
-    labels,
-    datasets: [
-      {
-        label: "응답 수",
-        data,
-        backgroundColor,
-      },
-    ],
-  });
-
-  /** Bar 차트 옵션 */
-  const barOptions = {
-    responsive: true,
-    maintainAspectRatio: false,
-    plugins: { legend: { position: "bottom" } },
-    scales: { y: { beginAtZero: true, ticks: { stepSize: 1 } } },
-  };
-
-  /** Doughnut 차트 옵션 */
-  const doughnutOptions = {
-    responsive: true,
-    maintainAspectRatio: false,
-    plugins: {
-      legend: { position: "top" },
-      tooltip: {
-        callbacks: {
-          label: (ctx) => {
-            const value = ctx.parsed;
-            const sum = ctx.dataset.data.reduce((acc, cur) => acc + cur, 0);
-            const pct = sum > 0 ? ((value / sum) * 100).toFixed(1) : 0;
-            return `${ctx.label}: ${value}명 (${pct}%)`;
-          },
-        },
-      },
-    },
-  };
-
-  /** 제출시간대 분포 */
+  // 차트 데이터 함수들
   const getSubmissionTimeData = () => {
     const hourCount = Array(24).fill(0);
     mergedData.forEach((row) => {
       const time = new Date(row["제출시간"]);
-      if (!isNaN(time)) {
-        hourCount[time.getHours()]++;
-      }
+      if (!isNaN(time)) hourCount[time.getHours()]++;
     });
-    return chartData(hourCount.map((_, i) => `${i}시`), hourCount);
+    return {
+      labels: hourCount.map((_, i) => `${i}시`),
+      datasets: [{ label: "응답 수", data: hourCount, backgroundColor: "#1890ff" }],
+    };
   };
 
-  /** 연령대 분포 */
   const getAgeGroupData = () => {
     const now = new Date();
     const ageGroups = { "19-24": 0, "25-29": 0, "30-35": 0, "36+": 0 };
@@ -217,39 +234,51 @@ function BatchDashboard() {
       else if (age <= 35) ageGroups["30-35"]++;
       else ageGroups["36+"]++;
     });
-    return chartData(Object.keys(ageGroups), Object.values(ageGroups), "#4a00e0");
+    return {
+      labels: Object.keys(ageGroups),
+      datasets: [{ label: "응답 수", data: Object.values(ageGroups), backgroundColor: "#52c41a" }],
+    };
   };
 
-  /** 특정 필드에 대해 지정된 카테고리 배열을 count */
-  const getCategoryData = (field, categories) => {
+  // getCategoryData: colors 매개변수를 추가하여 각 차트별 색상 지정
+  const getCategoryData = (field, categories, colors) => {
     const counts = categories.reduce((acc, key) => ({ ...acc, [key]: 0 }), {});
     mergedData.forEach((row) => {
       const value = row[field]?.toLowerCase() || "";
       categories.forEach((key) => {
-        if (value.includes(key.toLowerCase())) {
-          counts[key]++;
-        }
+        if (value.includes(key.toLowerCase())) counts[key]++;
       });
     });
     return {
       labels: Object.keys(counts),
+      datasets: [{ data: Object.values(counts), backgroundColor: colors }],
+    };
+  };
+
+  const getDailyTrendData = () => {
+    const dateCount = {};
+    mergedData.forEach((row) => {
+      const time = new Date(row["제출시간"]);
+      if (!isNaN(time)) {
+        const dateStr = time.toISOString().split("T")[0];
+        dateCount[dateStr] = (dateCount[dateStr] || 0) + 1;
+      }
+    });
+    const sortedDates = Object.keys(dateCount).sort();
+    return {
+      labels: sortedDates,
       datasets: [
         {
-          data: Object.values(counts),
-          backgroundColor: [
-            "#8e2de2",
-            "#4a00e0",
-            "#b266ff",
-            "#a64ca6",
-            "#cc66ff",
-            "#9933ff",
-          ],
+          label: "일별 지원자 수",
+          data: sortedDates.map((date) => dateCount[date]),
+          borderColor: "#faad14",
+          backgroundColor: "rgba(250, 173, 20, 0.2)",
+          fill: true,
         },
       ],
     };
   };
 
-  /** .xlsx 다운로드 (테이블 전체) */
   const handleDownloadTableExcel = () => {
     const ws = XLSX.utils.json_to_sheet(mergedData);
     const wb = XLSX.utils.book_new();
@@ -257,17 +286,13 @@ function BatchDashboard() {
     XLSX.writeFile(wb, "table_data.xlsx");
   };
 
-  /** 체크박스 토글 (집계 제외) */
   const handleExcludeChange = (surveyID) => {
     if (!surveyID) return;
-    if (excludedSurveyIds.includes(surveyID)) {
-      setExcludedSurveyIds(excludedSurveyIds.filter((id) => id !== surveyID));
-    } else {
-      setExcludedSurveyIds([...excludedSurveyIds, surveyID]);
-    }
+    excludedSurveyIds.includes(surveyID)
+      ? setExcludedSurveyIds(excludedSurveyIds.filter((id) => id !== surveyID))
+      : setExcludedSurveyIds([...excludedSurveyIds, surveyID]);
   };
 
-  /** 열 필터용 유틸 */
   const uniqueValuesFor = (field) => {
     const set = new Set();
     mergedData.forEach((row) => {
@@ -276,18 +301,11 @@ function BatchDashboard() {
     return [...set].map((val) => ({ text: val, value: val }));
   };
 
-  /** KPI 계산 시 제외된 surveyID는 집계에서 제외 */
-  const displayedData = mergedData.filter(
-    (row) => !excludedSurveyIds.includes(row.surveyID)
-  );
+  const displayedData = mergedData.filter((row) => !excludedSurveyIds.includes(row.surveyID));
   const totalApplicants = displayedData.length || 0;
-  const completedCount = displayedData.filter(
-    (row) => row["모집 상태"] === "작성완료"
-  ).length;
-  const completionRate =
-    totalApplicants > 0 ? ((completedCount / totalApplicants) * 100).toFixed(1) : 0;
+  const completedCount = displayedData.filter((row) => row["모집 상태"] === "작성완료").length;
+  const completionRate = totalApplicants > 0 ? ((completedCount / totalApplicants) * 100).toFixed(1) : 0;
 
-  /** 테이블 열 정의 (원하는 순서대로) */
   const tableColumns = [
     {
       title: "제외",
@@ -298,10 +316,7 @@ function BatchDashboard() {
         const checked = excludedSurveyIds.includes(record.surveyID);
         return (
           <div onClick={(e) => e.stopPropagation()}>
-            <Checkbox
-              checked={checked}
-              onChange={() => handleExcludeChange(record.surveyID)}
-            />
+            <Checkbox checked={checked} onChange={() => handleExcludeChange(record.surveyID)} />
           </div>
         );
       },
@@ -387,13 +402,12 @@ function BatchDashboard() {
       onFilter: (value, record) => record["현재 신분"] === value,
     },
     {
-      title: "교육 신청 전 주의 사항을 꼼꼼히 확인하셨나요? ",
+      title: "주의사항",
       dataIndex: "교육 신청 전 주의 사항을 꼼꼼히 확인하셨나요? ",
       key: "주의사항",
       ellipsis: true,
       filters: uniqueValuesFor("교육 신청 전 주의 사항을 꼼꼼히 확인하셨나요? "),
-      onFilter: (value, record) =>
-        record["교육 신청 전 주의 사항을 꼼꼼히 확인하셨나요? "] === value,
+      onFilter: (value, record) => record["교육 신청 전 주의 사항을 꼼꼼히 확인하셨나요? "] === value,
     },
     {
       title: "개발 학습 기간",
@@ -404,7 +418,7 @@ function BatchDashboard() {
       onFilter: (value, record) => record["개발 학습 기간"] === value,
     },
     {
-      title: "지원 동기와 취업 목표에 대해서 기재해 주세요. (300자 이상)",
+      title: "지원 동기",
       dataIndex: "지원 동기와 취업 목표에 대해서 기재해 주세요. (300자 이상)",
       key: "지원 동기",
       ellipsis: true,
@@ -413,16 +427,15 @@ function BatchDashboard() {
         record["지원 동기와 취업 목표에 대해서 기재해 주세요. (300자 이상)"] === value,
     },
     {
-      title: "내일배움카드를 보유하고 계신가요?",
+      title: "내일배움카드",
       dataIndex: "내일배움카드를 보유하고 계신가요?",
       key: "내일배움카드",
       ellipsis: true,
       filters: uniqueValuesFor("내일배움카드를 보유하고 계신가요?"),
-      onFilter: (value, record) =>
-        record["내일배움카드를 보유하고 계신가요?"] === value,
+      onFilter: (value, record) => record["내일배움카드를 보유하고 계신가요?"] === value,
     },
     {
-      title: "엘리스 트랙을 어떻게 알게 되셨나요? (*복수 선택 가능)",
+      title: "유입경로",
       dataIndex: "엘리스 트랙을 어떻게 알게 되셨나요? (*복수 선택 가능)",
       key: "유입경로",
       ellipsis: true,
@@ -431,7 +444,7 @@ function BatchDashboard() {
         record["엘리스 트랙을 어떻게 알게 되셨나요? (*복수 선택 가능)"] === value,
     },
     {
-      title: "아래와 같이 귀하의 개인정보를 수집·이용·제공하는 것에 동의합니까?",
+      title: "개인정보동의",
       dataIndex: "아래와 같이 귀하의 개인정보를 수집·이용·제공하는 것에 동의합니까?",
       key: "개인정보동의",
       ellipsis: true,
@@ -441,99 +454,116 @@ function BatchDashboard() {
     },
   ];
 
+  const onLayoutChange = (currentLayout, allLayouts) => setLayouts(allLayouts);
+
   return (
-    <Layout
-      style={{
-        minHeight: "100vh",
-        padding: "20px",
-        background: "linear-gradient(to right, #8e2de2, #4a00e0)",
-      }}
-    >
-      <Content style={{ background: "#fff", borderRadius: "8px", padding: "20px" }}>
-        <Button
-          onClick={() => navigate(-1)}
-          style={{ marginBottom: "20px", background: "#8e2de2", color: "white" }}
-        >
-          ← 뒤로 가기
-        </Button>
-        <Title level={2} style={{ textAlign: "center", color: "#4a00e0" }}>
-          KDT {trackName} {batch}기 대시보드
-        </Title>
+    <Layout style={{ minHeight: "100vh" }}>
+      <Header
+        style={{
+          backgroundColor: "#fff",
+          padding: "0 20px",
+          boxShadow: "0 2px 8px #f0f1f2",
+        }}
+      >
+        <Row justify="space-between" align="middle">
+          <Col>
+            <Button type="link" onClick={() => navigate(-1)}>
+              ← 뒤로 가기
+            </Button>
+          </Col>
+          <Col>
+            <Title level={3} style={{ margin: 0, color: "#1890ff" }}>
+              KDT 자율주행 {batch}기 대시보드
+            </Title>
+          </Col>
+          <Col>
+            <Button onClick={() => setEditMode(!editMode)}>
+              {editMode ? "편집 완료" : "편집"}
+            </Button>
+          </Col>
+        </Row>
+      </Header>
+      <Content style={{ padding: "20px", background: "#fdfdfd" }}>
+        <Card style={{ marginBottom: "20px" }}>
+          <Upload
+            multiple
+            accept=".xlsx"
+            beforeUpload={() => false}
+            onChange={handleUpload}
+            fileList={fileList}
+          >
+            <Button type="primary">엑셀 파일 업로드</Button>
+          </Upload>
+          {errorMessage && <p style={{ color: "red" }}>{errorMessage}</p>}
+        </Card>
 
-        <Upload
-          multiple
-          accept=".xlsx"
-          beforeUpload={() => false}
-          onChange={handleUpload}
-          fileList={fileList}
-        >
-          <Button type="primary" style={{ marginBottom: "20px", background: "#4a00e0" }}>
-            엑셀 파일 업로드
-          </Button>
-        </Upload>
-
-        {errorMessage && <p style={{ color: "red" }}>{errorMessage}</p>}
-
-        {/* KPI 카드 (체크된 행 제외) */}
-        <Card style={{ marginBottom: "20px", borderColor: "#8e2de2" }}>
+        <Card style={{ marginBottom: "20px" }}>
           <p>
-            전체 지원자 (제외 제외): <strong>{totalApplicants}</strong>명
-            <br />
-            작성완료: <strong>{completedCount}</strong>명
-            <br />
+            전체 지원자 (제외 제외): <strong>{totalApplicants}</strong>명&nbsp;&nbsp;
+            작성완료: <strong>{completedCount}</strong>명&nbsp;&nbsp;
             완료율: <strong>{completionRate}%</strong>
           </p>
         </Card>
 
-        <GridLayout
+        <Divider orientation="left">차트 분석</Divider>
+
+        <ResponsiveGridLayout
           className="layout"
-          layout={layout}
-          cols={12}
+          layouts={layouts}
+          onLayoutChange={onLayoutChange}
+          breakpoints={{ lg: 1200, md: 996, sm: 768, xs: 480, xxs: 0 }}
+          cols={{ lg: 12, md: 10, sm: 6, xs: 4, xxs: 2 }}
           rowHeight={150}
-          width={1200}
-          isDraggable={true}
-          isResizable={true}
+          margin={[20, 20]}
+          containerPadding={[20, 20]}
+          isDraggable={editMode}
+          isResizable={editMode}
+          autoSize={true}
         >
-          <div key="submissionTime">
+          <div key="submissionTime" style={{ background: "transparent" }}>
             <Card
               title="제출시간대 분포"
               extra={
-                <>
+                <Space>
                   <Button
                     size="small"
-                    onClick={() => downloadChart(chartRefs.submissionTime, "png", "submissionTime")}
-                    style={{ marginRight: 4 }}
+                    onClick={() =>
+                      downloadChart(chartRefs.submissionTime, "png", "submissionTime")
+                    }
                   >
                     PNG
                   </Button>
                   <Button
                     size="small"
-                    onClick={() => downloadChart(chartRefs.submissionTime, "pdf", "submissionTime")}
+                    onClick={() =>
+                      downloadChart(chartRefs.submissionTime, "pdf", "submissionTime")
+                    }
                   >
                     PDF
                   </Button>
-                </>
+                </Space>
               }
             >
-              <Bar
-                key={`submissionTime-${JSON.stringify(getSubmissionTimeData())}`}
-                redraw
-                ref={chartRefs.submissionTime}
-                data={getSubmissionTimeData()}
-                options={barOptions}
-              />
+              <div style={{ height: 300 }}>
+                <Bar
+                  key={`submissionTime-${JSON.stringify(getSubmissionTimeData())}`}
+                  redraw
+                  ref={chartRefs.submissionTime}
+                  data={getSubmissionTimeData()}
+                  options={barOptions}
+                />
+              </div>
             </Card>
           </div>
 
-          <div key="ageGroup">
+          <div key="ageGroup" style={{ background: "transparent" }}>
             <Card
               title="연령대 분포"
               extra={
-                <>
+                <Space>
                   <Button
                     size="small"
                     onClick={() => downloadChart(chartRefs.ageGroup, "png", "ageGroup")}
-                    style={{ marginRight: 4 }}
                   >
                     PNG
                   </Button>
@@ -543,75 +573,75 @@ function BatchDashboard() {
                   >
                     PDF
                   </Button>
-                </>
+                </Space>
               }
             >
-              <Bar
-                key={`ageGroup-${JSON.stringify(getAgeGroupData())}`}
-                redraw
-                ref={chartRefs.ageGroup}
-                data={getAgeGroupData()}
-                options={barOptions}
-              />
+              <div style={{ height: 300 }}>
+                <Bar
+                  key={`ageGroup-${JSON.stringify(getAgeGroupData())}`}
+                  redraw
+                  ref={chartRefs.ageGroup}
+                  data={getAgeGroupData()}
+                  options={barOptions}
+                />
+              </div>
             </Card>
           </div>
 
-          <div key="currentStatus">
+          <div key="currentStatus" style={{ background: "transparent" }}>
             <Card
               title="현재 신분 분포"
               extra={
-                <>
+                <Space>
                   <Button
                     size="small"
-                    onClick={() => downloadChart(chartRefs.currentStatus, "png", "currentStatus")}
-                    style={{ marginRight: 4 }}
+                    onClick={() =>
+                      downloadChart(chartRefs.currentStatus, "png", "currentStatus")
+                    }
                   >
                     PNG
                   </Button>
                   <Button
                     size="small"
-                    onClick={() => downloadChart(chartRefs.currentStatus, "pdf", "currentStatus")}
+                    onClick={() =>
+                      downloadChart(chartRefs.currentStatus, "pdf", "currentStatus")
+                    }
                   >
                     PDF
                   </Button>
-                </>
+                </Space>
               }
             >
-              <Doughnut
-                key={`currentStatus-${JSON.stringify(
-                  getCategoryData("현재 신분", [
-                    "졸업 예정",
-                    "졸업",
-                    "퇴사자",
-                    "취준생",
-                    "재학생",
-                    "기타",
-                  ])
-                )}`}
-                redraw
-                ref={chartRefs.currentStatus}
-                data={getCategoryData("현재 신분", [
-                  "졸업 예정",
-                  "졸업",
-                  "퇴사자",
-                  "취준생",
-                  "재학생",
-                  "기타",
-                ])}
-                options={doughnutOptions}
-              />
+              <div style={{ height: 300 }}>
+                <Doughnut
+                  key={`currentStatus-${JSON.stringify(
+                    getCategoryData(
+                      "현재 신분",
+                      ["졸업 예정", "졸업", "퇴사자", "취준생", "재학생", "기타"],
+                      ["#1890ff", "#52c41a", "#faad14", "#13c2c2", "#722ed1", "#eb2f96"]
+                    )
+                  )}`}
+                  redraw
+                  ref={chartRefs.currentStatus}
+                  data={getCategoryData(
+                    "현재 신분",
+                    ["졸업 예정", "졸업", "퇴사자", "취준생", "재학생", "기타"],
+                    ["#1890ff", "#52c41a", "#faad14", "#13c2c2", "#722ed1", "#eb2f96"]
+                  )}
+                  options={doughnutOptionsBottom}
+                />
+              </div>
             </Card>
           </div>
 
-          <div key="education">
+          <div key="education" style={{ background: "transparent" }}>
             <Card
               title="최종학력 분포"
               extra={
-                <>
+                <Space>
                   <Button
                     size="small"
                     onClick={() => downloadChart(chartRefs.education, "png", "education")}
-                    style={{ marginRight: 4 }}
                   >
                     PNG
                   </Button>
@@ -621,86 +651,126 @@ function BatchDashboard() {
                   >
                     PDF
                   </Button>
-                </>
+                </Space>
               }
             >
-              <Doughnut
-                key={`education-${JSON.stringify(
-                  getCategoryData("최종학력", [
-                    "4년제",
-                    "3년제",
-                    "2년제",
-                    "대학원",
-                    "고등학교",
-                    "기타",
-                  ])
-                )}`}
-                redraw
-                ref={chartRefs.education}
-                data={getCategoryData("최종학력", [
-                  "4년제",
-                  "3년제",
-                  "2년제",
-                  "대학원",
-                  "고등학교",
-                  "기타",
-                ])}
-                options={doughnutOptions}
-              />
+              <div style={{ height: 300 }}>
+                <Doughnut
+                  key={`education-${JSON.stringify(
+                    getCategoryData(
+                      "최종학력",
+                      ["4년제", "3년제", "2년제", "대학원", "고등학교", "기타"],
+                      ["#2f54eb", "#fa541c", "#52c41a", "#faad14", "#13c2c2", "#722ed1"]
+                    )
+                  )}`}
+                  redraw
+                  ref={chartRefs.education}
+                  data={getCategoryData(
+                    "최종학력",
+                    ["4년제", "3년제", "2년제", "대학원", "고등학교", "기타"],
+                    ["#2f54eb", "#fa541c", "#52c41a", "#faad14", "#13c2c2", "#722ed1"]
+                  )}
+                  options={doughnutOptionsBottom}
+                />
+              </div>
             </Card>
           </div>
 
-          <div key="referralPath">
+          <div key="referralPath" style={{ background: "transparent" }}>
             <Card
               title="주요 유입 경로"
               extra={
-                <>
+                <Space>
                   <Button
                     size="small"
-                    onClick={() => downloadChart(chartRefs.referralPath, "png", "referralPath")}
-                    style={{ marginRight: 4 }}
+                    onClick={() =>
+                      downloadChart(chartRefs.referralPath, "png", "referralPath")
+                    }
                   >
                     PNG
                   </Button>
                   <Button
                     size="small"
-                    onClick={() => downloadChart(chartRefs.referralPath, "pdf", "referralPath")}
+                    onClick={() =>
+                      downloadChart(chartRefs.referralPath, "pdf", "referralPath")
+                    }
                   >
                     PDF
                   </Button>
-                </>
+                </Space>
               }
             >
-              <Doughnut
-                key={`referralPath-${JSON.stringify(
-                  getCategoryData(
+              <div style={{ height: 300 }}>
+                <Doughnut
+                  key={`referralPath-${JSON.stringify(
+                    getCategoryData(
+                      "엘리스 트랙을 어떻게 알게 되셨나요? (*복수 선택 가능)",
+                      ["홈페이지", "구글", "지인", "블로그", "인스타그램", "광고", "기타"],
+                      ["#1890ff", "#13c2c2", "#52c41a", "#faad14", "#722ed1", "#eb2f96", "#fa541c"]
+                    )
+                  )}`}
+                  redraw
+                  ref={chartRefs.referralPath}
+                  data={getCategoryData(
                     "엘리스 트랙을 어떻게 알게 되셨나요? (*복수 선택 가능)",
-                    ["홈페이지", "구글", "지인", "블로그", "인스타그램", "광고", "기타"]
-                  )
-                )}`}
-                redraw
-                ref={chartRefs.referralPath}
-                data={getCategoryData(
-                  "엘리스 트랙을 어떻게 알게 되셨나요? (*복수 선택 가능)",
-                  ["홈페이지", "구글", "지인", "블로그", "인스타그램", "광고", "기타"]
-                )}
-                options={doughnutOptions}
-              />
+                    ["홈페이지", "구글", "지인", "블로그", "인스타그램", "광고", "기타"],
+                    ["#1890ff", "#13c2c2", "#52c41a", "#faad14", "#722ed1", "#eb2f96", "#fa541c"]
+                  )}
+                  options={doughnutOptionsBottom}
+                />
+              </div>
             </Card>
           </div>
-        </GridLayout>
 
-        {/* 지원자 상세 테이블 */}
+          <div key="dailyTrend" style={{ background: "transparent" }}>
+            <Card
+              title="일별 지원자 추이"
+              extra={
+                <Space>
+                  <Button
+                    size="small"
+                    onClick={() =>
+                      downloadChart(chartRefs.dailyTrend, "png", "dailyTrend")
+                    }
+                  >
+                    PNG
+                  </Button>
+                  <Button
+                    size="small"
+                    onClick={() =>
+                      downloadChart(chartRefs.dailyTrend, "pdf", "dailyTrend")
+                    }
+                  >
+                    PDF
+                  </Button>
+                </Space>
+              }
+            >
+              <div style={{ height: 300 }}>
+                <Line
+                  key={`dailyTrend-${JSON.stringify(getDailyTrendData())}`}
+                  redraw
+                  ref={chartRefs.dailyTrend}
+                  data={getDailyTrendData()}
+                  options={lineOptions}
+                />
+              </div>
+            </Card>
+          </div>
+        </ResponsiveGridLayout>
+
+        <Divider orientation="left">지원자 상세 테이블</Divider>
         <Card
           title={
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <span>지원자 상세 테이블</span>
-              <Button type="primary" onClick={handleDownloadTableExcel}>
-                엑셀 다운로드
-              </Button>
-            </div>
+            <Row justify="space-between" align="middle">
+              <Col>지원자 상세 테이블</Col>
+              <Col>
+                <Button type="primary" onClick={handleDownloadTableExcel}>
+                  엑셀 다운로드
+                </Button>
+              </Col>
+            </Row>
           }
-          style={{ marginTop: "40px" }}
         >
           <Table
             dataSource={mergedData}

@@ -1,20 +1,40 @@
+// src/App.js
 import React from "react";
 import { Routes, Route } from "react-router-dom";
 import TopDashboard from "./pages/TopDashboard";
 import TrackDashboard from "./pages/TrackDashboard";
 import BatchDashboard from "./pages/BatchDashboard";
+import LoginPage from "./pages/Login";
+import ProtectedRoute from "./components/ProtectedRoute";
 
 function App() {
   return (
     <Routes>
-      {/* 최상위 페이지 */}
-      <Route path="/" element={<TopDashboard />} />
-
-      {/* 하위 페이지 : 각 트랙별 대시보드 */}
-      <Route path="/track/:trackName" element={<TrackDashboard />} />
-
-      {/* 최하위 페이지 : 각 트랙의 기수별 대시보드 */}
-      <Route path="/track/:trackName/batch/:batch" element={<BatchDashboard />} />
+      <Route path="/login" element={<LoginPage />} />
+      <Route
+        path="/"
+        element={
+          <ProtectedRoute>
+            <TopDashboard />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/track/:trackName/"
+        element={
+          <ProtectedRoute>
+            <TrackDashboard />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/track/:trackName/batch/:batch"
+        element={
+          <ProtectedRoute>
+            <BatchDashboard />
+          </ProtectedRoute>
+        }
+      />
     </Routes>
   );
 }
